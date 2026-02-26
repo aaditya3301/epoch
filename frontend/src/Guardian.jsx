@@ -1,66 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ethers } from 'ethers';
 import CryptoJS from 'crypto-js';
-
-// ─────────────────────────────────────────────
-// Guardian Personality — Message Templates
-// ─────────────────────────────────────────────
-const GREETINGS = [
-    "I am the Guardian of forgotten epochs.\nState your claim — which vault do you seek?",
-    "The vaults hum in silence, waiting for their rightful claimant.\nSpeak the number of the one you wish to reclaim.",
-    "You stand before the threshold of sealed time.\nWhich vault calls to you, seeker?"
-];
-
-const MESSAGES = {
-    capsuleFound: (id, creator, date) =>
-        `Vault **${id}**… sealed by \`${creator}\` on ${date}.\nLet me consult the temporal seal…`,
-
-    timeLocked: (days, hours, mins) => {
-        let timeStr = '';
-        if (days > 0) timeStr += `${days} day${days !== 1 ? 's' : ''}`;
-        if (hours > 0) timeStr += `${timeStr ? ', ' : ''}${hours} hour${hours !== 1 ? 's' : ''}`;
-        if (mins > 0 && days === 0) timeStr += `${timeStr ? ', ' : ''}${mins} minute${mins !== 1 ? 's' : ''}`;
-        if (!timeStr) timeStr = 'moments';
-        return `Patience, seeker. This vault remains bound by time.\nYou must wait **${timeStr}** before the seal dissolves.\n\nReturn when the moment arrives. Or speak another vault number.`;
-    },
-
-    readyForPassword:
-        "The time-lock has dissolved.\nBut the **cryptographic seal** remains.\n\nSpeak the password to shatter it.",
-
-    wrongPassword:
-        "The seal rejects your words. The incantation is incorrect.\nTry again, seeker — or the vault stays sealed forever.",
-
-    unlockSuccess:
-        "The seal is broken.\n\nYour payload emerges from the depths of the chain…\nDownloading your artifact now.",
-
-    alreadyUnlocked:
-        "This vault has already been claimed.\nIts contents have been released. There is nothing left to retrieve.\n\nSpeak another vault number if you seek elsewhere.",
-
-    notFound:
-        "I sense no vault bearing that identifier.\nAre you certain of the number, seeker?",
-
-    noId:
-        "I need a vault number to proceed.\nSpeak it plainly — for example: *\"Capsule 7\"* or simply *\"7\"*.",
-
-    walletNeeded:
-        "You must connect your wallet before approaching the vaults.\nThe chain cannot verify your intent without it.",
-
-    error: (msg) =>
-        `A disturbance ripples through the chain…\n\n\`${msg}\`\n\nTry again, seeker.`,
-
-    farewell:
-        "The vault is resealed. Until next time, seeker.",
-};
+import { chatWithGuardian, buildCapsuleContext } from './groqClient.js';
 
 // ─────────────────────────────────────────────
 // Helper: extract capsule ID from natural text
 // ─────────────────────────────────────────────
 function extractCapsuleId(text) {
     const cleaned = text.trim();
-    // Match patterns: "capsule 45", "vault #3", "#12", "id 7", or bare numbers
     const patterns = [
         /(?:capsule|vault|id|epoch|#)\s*#?(\d+)/i,
-        /^(\d+)$/  // bare number
+        /^(\d+)$/
     ];
     for (const pattern of patterns) {
         const match = cleaned.match(pattern);
@@ -79,10 +29,25 @@ function formatDate(unixTimestamp) {
 }
 
 // ─────────────────────────────────────────────
+// Helper: format time remaining into readable string
+// ─────────────────────────────────────────────
+function formatTimeRemaining(seconds) {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    let parts = [];
+    if (days > 0) parts.push(`${days} day${days !== 1 ? 's' : ''}`);
+    if (hours > 0) parts.push(`${hours} hour${hours !== 1 ? 's' : ''}`);
+    if (mins > 0 && days === 0) parts.push(`${mins} minute${mins !== 1 ? 's' : ''}`);
+    return parts.join(', ') || 'moments';
+}
+
+// ─────────────────────────────────────────────
 // Guardian Component
 // ─────────────────────────────────────────────
 export default function Guardian({ contract, provider, signer, onClose, isActive }) {
-    const [messages, setMessages] = useState([]);
+    const [messages, setMessages] = useState([]);         // UI messages
+    const [llmHistory, setLlmHistory] = useState([]);     // LLM conversation history
     const [input, setInput] = useState('');
     const [guardianState, setGuardianState] = useState('GREETING');
     const [currentCapsuleId, setCurrentCapsuleId] = useState(null);
@@ -107,9 +72,7 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
     useEffect(() => {
         if (isActive && !hasGreeted.current) {
             hasGreeted.current = true;
-            const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
-            addGuardianMessage(greeting, true);
-            setGuardianState('AWAITING_ID');
+            generateGreeting();
         }
     }, [isActive]);
 
@@ -117,6 +80,7 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
     useEffect(() => {
         if (!isActive) {
             setMessages([]);
+            setLlmHistory([]);
             setGuardianState('GREETING');
             setCurrentCapsuleId(null);
             setInput('');
@@ -125,8 +89,11 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         }
     }, [isActive]);
 
-    function addGuardianMessage(text, animated = false) {
-        setMessages(prev => [...prev, { role: 'guardian', text, animated }]);
+    // ─────────────────────────────────────
+    // Message helpers
+    // ─────────────────────────────────────
+    function addGuardianMessage(text) {
+        setMessages(prev => [...prev, { role: 'guardian', text }]);
     }
 
     function addUserMessage(text) {
@@ -142,6 +109,45 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
     }
 
     // ─────────────────────────────────────
+    // LLM call wrapper
+    // ─────────────────────────────────────
+    async function askGuardian(userText, contextScenario, contextData = {}) {
+        // Build the messages array for the LLM
+        const contextMsg = buildCapsuleContext(contextScenario, contextData);
+        const newHistory = [...llmHistory];
+
+        if (userText) {
+            newHistory.push({ role: 'user', content: userText });
+        }
+
+        // Add context as a system message right before the call
+        const messagesForLLM = [...newHistory, contextMsg];
+
+        const response = await chatWithGuardian(messagesForLLM);
+
+        // Update history with the assistant's response
+        newHistory.push({ role: 'assistant', content: response });
+        setLlmHistory(newHistory);
+
+        return response;
+    }
+
+    // ─────────────────────────────────────
+    // Greeting
+    // ─────────────────────────────────────
+    async function generateGreeting() {
+        setIsProcessing(true);
+        addThinkingMessage();
+
+        const response = await askGuardian(null, 'GREETING');
+
+        removeThinkingMessage();
+        addGuardianMessage(response);
+        setGuardianState('AWAITING_ID');
+        setIsProcessing(false);
+    }
+
+    // ─────────────────────────────────────
     // Main message processor (state machine)
     // ─────────────────────────────────────
     async function processMessage(text) {
@@ -149,9 +155,6 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         setInput('');
         setIsProcessing(true);
         addThinkingMessage();
-
-        // Small delay for natural feel
-        await new Promise(r => setTimeout(r, 600));
 
         try {
             switch (guardianState) {
@@ -164,15 +167,16 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
                     break;
 
                 default:
-                    removeThinkingMessage();
-                    addGuardianMessage(MESSAGES.noId);
-                    setGuardianState('AWAITING_ID');
+                    await handleAwaitingId(text);
             }
         } catch (err) {
             console.error('Guardian error:', err);
             removeThinkingMessage();
-            addGuardianMessage(MESSAGES.error(err.reason || err.message || 'Unknown error'));
-            // Reset to awaiting ID so user can try again
+            const response = await askGuardian(text, 'UNLOCK_ERROR', {
+                id: currentCapsuleId || '?',
+                error: err.reason || err.message || 'Unknown error'
+            });
+            addGuardianMessage(response);
             setGuardianState('AWAITING_ID');
         } finally {
             setIsProcessing(false);
@@ -185,7 +189,8 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
     async function handleAwaitingId(text) {
         if (!contract || !provider) {
             removeThinkingMessage();
-            addGuardianMessage(MESSAGES.walletNeeded);
+            const response = await askGuardian(text, 'WALLET_NEEDED');
+            addGuardianMessage(response);
             return;
         }
 
@@ -193,15 +198,20 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
 
         if (capsuleId === null) {
             removeThinkingMessage();
-            addGuardianMessage(MESSAGES.noId);
+            const response = await askGuardian(text, 'NO_CAPSULE_ID');
+            addGuardianMessage(response);
             return;
         }
 
-        // Check if capsule exists by reading nextCapsuleId
+        // Check if capsule exists
         const nextId = await contract.nextCapsuleId();
         if (capsuleId >= Number(nextId)) {
             removeThinkingMessage();
-            addGuardianMessage(MESSAGES.notFound);
+            const response = await askGuardian(text, 'CAPSULE_NOT_FOUND', {
+                id: capsuleId,
+                maxId: Number(nextId) - 1
+            });
+            addGuardianMessage(response);
             return;
         }
 
@@ -212,44 +222,52 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         const createdAt = Number(capsule[3]);
         const unlocked = capsule[5];
 
-        const shortCreator = `${creator.substring(0, 6)}…${creator.substring(creator.length - 4)}`;
-        const dateStr = formatDate(createdAt);
-
-        removeThinkingMessage();
-
-        // Show the "found" message first
-        addGuardianMessage(MESSAGES.capsuleFound(capsuleId, shortCreator, dateStr));
-
-        // Small pause before the verdict
-        await new Promise(r => setTimeout(r, 1200));
-        addThinkingMessage();
-        await new Promise(r => setTimeout(r, 800));
-        removeThinkingMessage();
+        const shortCreator = `${creator.substring(0, 6)}...${creator.substring(creator.length - 4)}`;
+        const createdAtStr = formatDate(createdAt);
+        const unlockTimeStr = formatDate(unlockTime);
 
         // Check if already unlocked
         if (unlocked) {
-            addGuardianMessage(MESSAGES.alreadyUnlocked);
+            removeThinkingMessage();
+            const response = await askGuardian(text, 'CAPSULE_ALREADY_UNLOCKED', {
+                id: capsuleId,
+                creator: shortCreator,
+                createdAt: createdAtStr
+            });
+            addGuardianMessage(response);
             setGuardianState('AWAITING_ID');
             return;
         }
 
-        // Check time lock. Use on-chain block timestamp for accuracy
+        // Check time lock
         const block = await provider.getBlock('latest');
-        const currentTime = block.timestamp;
-        const timeRemaining = unlockTime - Number(currentTime);
+        const currentTime = Number(block.timestamp);
+        const timeRemaining = unlockTime - currentTime;
 
         if (timeRemaining > 0) {
-            const days = Math.floor(timeRemaining / 86400);
-            const hours = Math.floor((timeRemaining % 86400) / 3600);
-            const mins = Math.floor((timeRemaining % 3600) / 60);
-            addGuardianMessage(MESSAGES.timeLocked(days, hours, mins));
+            removeThinkingMessage();
+            const response = await askGuardian(text, 'CAPSULE_FOUND_TIME_LOCKED', {
+                id: capsuleId,
+                creator: shortCreator,
+                createdAt: createdAtStr,
+                unlockTime: unlockTimeStr,
+                timeRemaining: formatTimeRemaining(timeRemaining)
+            });
+            addGuardianMessage(response);
             setGuardianState('AWAITING_ID');
             return;
         }
 
         // Time has passed — ask for password
+        removeThinkingMessage();
         setCurrentCapsuleId(capsuleId);
-        addGuardianMessage(MESSAGES.readyForPassword);
+        const response = await askGuardian(text, 'CAPSULE_FOUND_READY', {
+            id: capsuleId,
+            creator: shortCreator,
+            createdAt: createdAtStr,
+            unlockTime: unlockTimeStr
+        });
+        addGuardianMessage(response);
         setGuardianState('AWAITING_PASSWORD');
     }
 
@@ -261,50 +279,53 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
 
         if (!password) {
             removeThinkingMessage();
-            addGuardianMessage("You must speak the password, seeker. The seal awaits your words.");
+            const response = await askGuardian(text, 'CAPSULE_FOUND_READY', {
+                id: currentCapsuleId
+            });
+            addGuardianMessage(response);
             return;
         }
 
-        // Check if user changed their mind and is providing a new capsule ID
+        // Check if user is switching to a different capsule
         const maybeNewId = extractCapsuleId(text);
-        if (maybeNewId !== null && text.toLowerCase().includes('capsule') || text.toLowerCase().includes('vault')) {
+        if (maybeNewId !== null && (text.toLowerCase().includes('capsule') || text.toLowerCase().includes('vault'))) {
             removeThinkingMessage();
-            addGuardianMessage("Abandoning the current vault… Let me look up the new one.");
-            await new Promise(r => setTimeout(r, 500));
             setGuardianState('AWAITING_ID');
+            addThinkingMessage();
             await handleAwaitingId(text);
             return;
         }
 
         removeThinkingMessage();
-        addGuardianMessage("Testing the cryptographic seal…");
 
-        await new Promise(r => setTimeout(r, 400));
+        // Show "testing the seal" message
+        const testingResponse = await askGuardian(password, 'PASSWORD_TESTING', {
+            id: currentCapsuleId
+        });
+        addGuardianMessage(testingResponse);
+
+        await new Promise(r => setTimeout(r, 300));
         addThinkingMessage();
 
         try {
-            // Call the unlock function on the contract (this costs gas)
+            // Call the unlock function on the contract
             const tx = await contract.unlock(currentCapsuleId, password);
             await tx.wait();
 
             removeThinkingMessage();
-            addGuardianMessage(MESSAGES.unlockSuccess);
 
-            // Now fetch and decrypt from IPFS
-            await new Promise(r => setTimeout(r, 800));
-            addThinkingMessage();
-
+            // Fetch and decrypt from IPFS
             const capsule = await contract.capsules(currentCapsuleId);
             const ipfsCID = capsule[1];
 
             const ipfsRes = await fetch(`https://gateway.pinata.cloud/ipfs/${ipfsCID}`);
-            if (!ipfsRes.ok) throw new Error('Failed to retrieve payload from the decentralized archive.');
+            if (!ipfsRes.ok) throw new Error('Failed to retrieve payload from IPFS.');
             const encryptedFile = await ipfsRes.text();
 
             const decryptedBytes = CryptoJS.AES.decrypt(encryptedFile, password);
             const decryptedDataUrl = decryptedBytes.toString(CryptoJS.enc.Utf8);
 
-            if (!decryptedDataUrl) throw new Error("Decryption produced no output — the password may be subtly wrong.");
+            if (!decryptedDataUrl) throw new Error('Decryption produced empty output.');
 
             // Trigger download
             const a = document.createElement('a');
@@ -314,8 +335,11 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
             a.click();
             document.body.removeChild(a);
 
-            removeThinkingMessage();
-            addGuardianMessage("Your artifact has been delivered.\nThe vault is now empty. Is there another vault you seek?");
+            // Success response from LLM
+            const successResponse = await askGuardian('', 'DOWNLOAD_COMPLETE', {
+                id: currentCapsuleId
+            });
+            addGuardianMessage(successResponse);
             setCurrentCapsuleId(null);
             setGuardianState('AWAITING_ID');
 
@@ -323,19 +347,33 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
             removeThinkingMessage();
             console.error('Unlock error:', err);
 
-            // Check if it's a password error from the contract
             const reason = err.reason || err.message || '';
+
             if (reason.includes('Bad Pass') || reason.includes('password') || reason.includes('revert')) {
-                addGuardianMessage(MESSAGES.wrongPassword);
+                const response = await askGuardian('', 'WRONG_PASSWORD', {
+                    id: currentCapsuleId
+                });
+                addGuardianMessage(response);
                 // Stay in AWAITING_PASSWORD so they can retry
             } else if (reason.includes('Too early')) {
-                addGuardianMessage("The temporal seal is still active. The chain does not lie — you must wait.");
+                const response = await askGuardian('', 'CAPSULE_FOUND_TIME_LOCKED', {
+                    id: currentCapsuleId,
+                    timeRemaining: 'unknown'
+                });
+                addGuardianMessage(response);
                 setGuardianState('AWAITING_ID');
             } else if (reason.includes('Unlocked')) {
-                addGuardianMessage(MESSAGES.alreadyUnlocked);
+                const response = await askGuardian('', 'CAPSULE_ALREADY_UNLOCKED', {
+                    id: currentCapsuleId
+                });
+                addGuardianMessage(response);
                 setGuardianState('AWAITING_ID');
             } else {
-                addGuardianMessage(MESSAGES.error(reason));
+                const response = await askGuardian('', 'UNLOCK_ERROR', {
+                    id: currentCapsuleId,
+                    error: reason
+                });
+                addGuardianMessage(response);
                 setGuardianState('AWAITING_ID');
             }
         }
@@ -405,7 +443,7 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
                         >
                             {msg.text.split('\n').map((line, j) => (
                                 <span key={j}>
-                                    {renderFormattedText(line)}
+                                    {line}
                                     {j < msg.text.split('\n').length - 1 && <br />}
                                 </span>
                             ))}
@@ -423,8 +461,8 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
                     className="chat-input"
                     placeholder={
                         guardianState === 'AWAITING_PASSWORD'
-                            ? 'Enter the decryption password…'
-                            : 'Speak to the Guardian…'
+                            ? 'Enter the decryption password...'
+                            : 'Speak to the Guardian...'
                     }
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
@@ -442,49 +480,4 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
             </form>
         </div>
     );
-}
-
-// Simple markdown-like text formatting (bold, code, italic)
-function renderFormattedText(text) {
-    // Process **bold**, `code`, and *italic*
-    const parts = [];
-    let remaining = text;
-    let key = 0;
-
-    while (remaining.length > 0) {
-        // Bold **text**
-        const boldMatch = remaining.match(/\*\*(.+?)\*\*/);
-        // Code `text`
-        const codeMatch = remaining.match(/`(.+?)`/);
-        // Italic *text*
-        const italicMatch = remaining.match(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/);
-
-        const matches = [
-            boldMatch && { type: 'bold', match: boldMatch, index: boldMatch.index },
-            codeMatch && { type: 'code', match: codeMatch, index: codeMatch.index },
-            italicMatch && { type: 'italic', match: italicMatch, index: italicMatch.index },
-        ].filter(Boolean).sort((a, b) => a.index - b.index);
-
-        if (matches.length === 0) {
-            parts.push(<span key={key++}>{remaining}</span>);
-            break;
-        }
-
-        const first = matches[0];
-        if (first.index > 0) {
-            parts.push(<span key={key++}>{remaining.substring(0, first.index)}</span>);
-        }
-
-        if (first.type === 'bold') {
-            parts.push(<strong key={key++}>{first.match[1]}</strong>);
-        } else if (first.type === 'code') {
-            parts.push(<code key={key++} className="guardian-code">{first.match[1]}</code>);
-        } else if (first.type === 'italic') {
-            parts.push(<em key={key++}>{first.match[1]}</em>);
-        }
-
-        remaining = remaining.substring(first.index + first.match[0].length);
-    }
-
-    return parts;
 }
