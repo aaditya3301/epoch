@@ -3,9 +3,6 @@ import { ethers } from 'ethers';
 import CryptoJS from 'crypto-js';
 import { chatWithGuardian, buildCapsuleContext } from './groqClient.js';
 
-// ─────────────────────────────────────────────
-// Helper: extract capsule ID from natural text
-// ─────────────────────────────────────────────
 function extractCapsuleId(text) {
     const cleaned = text.trim();
     const patterns = [
@@ -19,18 +16,12 @@ function extractCapsuleId(text) {
     return null;
 }
 
-// ─────────────────────────────────────────────
-// Helper: format a unix timestamp to readable
-// ─────────────────────────────────────────────
 function formatDate(unixTimestamp) {
     return new Date(Number(unixTimestamp) * 1000).toLocaleDateString('en-US', {
         year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
     });
 }
 
-// ─────────────────────────────────────────────
-// Helper: format time remaining into readable string
-// ─────────────────────────────────────────────
 function formatTimeRemaining(seconds) {
     const days = Math.floor(seconds / 86400);
     const hours = Math.floor((seconds % 86400) / 3600);
@@ -42,12 +33,9 @@ function formatTimeRemaining(seconds) {
     return parts.join(', ') || 'moments';
 }
 
-// ─────────────────────────────────────────────
-// Guardian Component
-// ─────────────────────────────────────────────
 export default function Guardian({ contract, provider, signer, onClose, isActive }) {
-    const [messages, setMessages] = useState([]);         // UI messages
-    const [llmHistory, setLlmHistory] = useState([]);     // LLM conversation history
+    const [messages, setMessages] = useState([]);
+    const [llmHistory, setLlmHistory] = useState([]);
     const [input, setInput] = useState('');
     const [guardianState, setGuardianState] = useState('GREETING');
     const [currentCapsuleId, setCurrentCapsuleId] = useState(null);
@@ -56,19 +44,14 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
     const inputRef = useRef(null);
     const hasGreeted = useRef(false);
 
-    // Auto-scroll to bottom
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
 
-    // Focus input when modal opens
     useEffect(() => {
-        if (isActive) {
-            setTimeout(() => inputRef.current?.focus(), 400);
-        }
+        if (isActive) setTimeout(() => inputRef.current?.focus(), 400);
     }, [isActive]);
 
-    // Greet on first open
     useEffect(() => {
         if (isActive && !hasGreeted.current) {
             hasGreeted.current = true;
@@ -76,7 +59,6 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         }
     }, [isActive]);
 
-    // Reset when modal closes
     useEffect(() => {
         if (!isActive) {
             setMessages([]);
@@ -89,67 +71,40 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         }
     }, [isActive]);
 
-    // ─────────────────────────────────────
-    // Message helpers
-    // ─────────────────────────────────────
     function addGuardianMessage(text) {
         setMessages(prev => [...prev, { role: 'guardian', text }]);
     }
-
     function addUserMessage(text) {
         setMessages(prev => [...prev, { role: 'user', text }]);
     }
-
     function addThinkingMessage() {
         setMessages(prev => [...prev, { role: 'thinking', text: '' }]);
     }
-
     function removeThinkingMessage() {
         setMessages(prev => prev.filter(m => m.role !== 'thinking'));
     }
 
-    // ─────────────────────────────────────
-    // LLM call wrapper
-    // ─────────────────────────────────────
     async function askGuardian(userText, contextScenario, contextData = {}) {
-        // Build the messages array for the LLM
         const contextMsg = buildCapsuleContext(contextScenario, contextData);
         const newHistory = [...llmHistory];
-
-        if (userText) {
-            newHistory.push({ role: 'user', content: userText });
-        }
-
-        // Add context as a system message right before the call
+        if (userText) newHistory.push({ role: 'user', content: userText });
         const messagesForLLM = [...newHistory, contextMsg];
-
         const response = await chatWithGuardian(messagesForLLM);
-
-        // Update history with the assistant's response
         newHistory.push({ role: 'assistant', content: response });
         setLlmHistory(newHistory);
-
         return response;
     }
 
-    // ─────────────────────────────────────
-    // Greeting
-    // ─────────────────────────────────────
     async function generateGreeting() {
         setIsProcessing(true);
         addThinkingMessage();
-
         const response = await askGuardian(null, 'GREETING');
-
         removeThinkingMessage();
         addGuardianMessage(response);
         setGuardianState('AWAITING_ID');
         setIsProcessing(false);
     }
 
-    // ─────────────────────────────────────
-    // Main message processor (state machine)
-    // ─────────────────────────────────────
     async function processMessage(text) {
         addUserMessage(text);
         setInput('');
@@ -161,11 +116,9 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
                 case 'AWAITING_ID':
                     await handleAwaitingId(text);
                     break;
-
                 case 'AWAITING_PASSWORD':
                     await handleAwaitingPassword(text);
                     break;
-
                 default:
                     await handleAwaitingId(text);
             }
@@ -183,9 +136,6 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         }
     }
 
-    // ─────────────────────────────────────
-    // State: AWAITING_ID
-    // ─────────────────────────────────────
     async function handleAwaitingId(text) {
         if (!contract || !provider) {
             removeThinkingMessage();
@@ -195,7 +145,6 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         }
 
         const capsuleId = extractCapsuleId(text);
-
         if (capsuleId === null) {
             removeThinkingMessage();
             const response = await askGuardian(text, 'NO_CAPSULE_ID');
@@ -203,43 +152,35 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
             return;
         }
 
-        // Check if capsule exists
         const nextId = await contract.nextCapsuleId();
         if (capsuleId >= Number(nextId)) {
             removeThinkingMessage();
             const response = await askGuardian(text, 'CAPSULE_NOT_FOUND', {
-                id: capsuleId,
-                maxId: Number(nextId) - 1
+                id: capsuleId, maxId: Number(nextId) - 1
             });
             addGuardianMessage(response);
             return;
         }
 
-        // Query on-chain capsule data
         const capsule = await contract.capsules(capsuleId);
         const creator = capsule[0];
         const unlockTime = Number(capsule[2]);
         const createdAt = Number(capsule[3]);
         const unlocked = capsule[5];
-
         const shortCreator = `${creator.substring(0, 6)}...${creator.substring(creator.length - 4)}`;
         const createdAtStr = formatDate(createdAt);
         const unlockTimeStr = formatDate(unlockTime);
 
-        // Check if already unlocked
         if (unlocked) {
             removeThinkingMessage();
             const response = await askGuardian(text, 'CAPSULE_ALREADY_UNLOCKED', {
-                id: capsuleId,
-                creator: shortCreator,
-                createdAt: createdAtStr
+                id: capsuleId, creator: shortCreator, createdAt: createdAtStr
             });
             addGuardianMessage(response);
             setGuardianState('AWAITING_ID');
             return;
         }
 
-        // Check time lock
         const block = await provider.getBlock('latest');
         const currentTime = Number(block.timestamp);
         const timeRemaining = unlockTime - currentTime;
@@ -247,46 +188,32 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         if (timeRemaining > 0) {
             removeThinkingMessage();
             const response = await askGuardian(text, 'CAPSULE_FOUND_TIME_LOCKED', {
-                id: capsuleId,
-                creator: shortCreator,
-                createdAt: createdAtStr,
-                unlockTime: unlockTimeStr,
-                timeRemaining: formatTimeRemaining(timeRemaining)
+                id: capsuleId, creator: shortCreator, createdAt: createdAtStr,
+                unlockTime: unlockTimeStr, timeRemaining: formatTimeRemaining(timeRemaining)
             });
             addGuardianMessage(response);
             setGuardianState('AWAITING_ID');
             return;
         }
 
-        // Time has passed — ask for password
         removeThinkingMessage();
         setCurrentCapsuleId(capsuleId);
         const response = await askGuardian(text, 'CAPSULE_FOUND_READY', {
-            id: capsuleId,
-            creator: shortCreator,
-            createdAt: createdAtStr,
-            unlockTime: unlockTimeStr
+            id: capsuleId, creator: shortCreator, createdAt: createdAtStr, unlockTime: unlockTimeStr
         });
         addGuardianMessage(response);
         setGuardianState('AWAITING_PASSWORD');
     }
 
-    // ─────────────────────────────────────
-    // State: AWAITING_PASSWORD
-    // ─────────────────────────────────────
     async function handleAwaitingPassword(text) {
         const password = text.trim();
-
         if (!password) {
             removeThinkingMessage();
-            const response = await askGuardian(text, 'CAPSULE_FOUND_READY', {
-                id: currentCapsuleId
-            });
+            const response = await askGuardian(text, 'CAPSULE_FOUND_READY', { id: currentCapsuleId });
             addGuardianMessage(response);
             return;
         }
 
-        // Check if user is switching to a different capsule
         const maybeNewId = extractCapsuleId(text);
         if (maybeNewId !== null && (text.toLowerCase().includes('capsule') || text.toLowerCase().includes('vault'))) {
             removeThinkingMessage();
@@ -297,37 +224,25 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         }
 
         removeThinkingMessage();
-
-        // Show "testing the seal" message
-        const testingResponse = await askGuardian(password, 'PASSWORD_TESTING', {
-            id: currentCapsuleId
-        });
+        const testingResponse = await askGuardian(password, 'PASSWORD_TESTING', { id: currentCapsuleId });
         addGuardianMessage(testingResponse);
-
         await new Promise(r => setTimeout(r, 300));
         addThinkingMessage();
 
         try {
-            // Call the unlock function on the contract
             const tx = await contract.unlock(currentCapsuleId, password);
             await tx.wait();
-
             removeThinkingMessage();
 
-            // Fetch and decrypt from IPFS
             const capsule = await contract.capsules(currentCapsuleId);
             const ipfsCID = capsule[1];
-
             const ipfsRes = await fetch(`https://gateway.pinata.cloud/ipfs/${ipfsCID}`);
             if (!ipfsRes.ok) throw new Error('Failed to retrieve payload from IPFS.');
             const encryptedFile = await ipfsRes.text();
-
             const decryptedBytes = CryptoJS.AES.decrypt(encryptedFile, password);
             const decryptedDataUrl = decryptedBytes.toString(CryptoJS.enc.Utf8);
-
             if (!decryptedDataUrl) throw new Error('Decryption produced empty output.');
 
-            // Trigger download
             const a = document.createElement('a');
             a.href = decryptedDataUrl;
             a.download = `Epoch_${currentCapsuleId}_unlocked`;
@@ -335,53 +250,34 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
             a.click();
             document.body.removeChild(a);
 
-            // Success response from LLM
-            const successResponse = await askGuardian('', 'DOWNLOAD_COMPLETE', {
-                id: currentCapsuleId
-            });
+            const successResponse = await askGuardian('', 'DOWNLOAD_COMPLETE', { id: currentCapsuleId });
             addGuardianMessage(successResponse);
             setCurrentCapsuleId(null);
             setGuardianState('AWAITING_ID');
-
         } catch (err) {
             removeThinkingMessage();
             console.error('Unlock error:', err);
-
             const reason = err.reason || err.message || '';
 
             if (reason.includes('Bad Pass') || reason.includes('password') || reason.includes('revert')) {
-                const response = await askGuardian('', 'WRONG_PASSWORD', {
-                    id: currentCapsuleId
-                });
+                const response = await askGuardian('', 'WRONG_PASSWORD', { id: currentCapsuleId });
                 addGuardianMessage(response);
-                // Stay in AWAITING_PASSWORD so they can retry
             } else if (reason.includes('Too early')) {
-                const response = await askGuardian('', 'CAPSULE_FOUND_TIME_LOCKED', {
-                    id: currentCapsuleId,
-                    timeRemaining: 'unknown'
-                });
+                const response = await askGuardian('', 'CAPSULE_FOUND_TIME_LOCKED', { id: currentCapsuleId, timeRemaining: 'unknown' });
                 addGuardianMessage(response);
                 setGuardianState('AWAITING_ID');
             } else if (reason.includes('Unlocked')) {
-                const response = await askGuardian('', 'CAPSULE_ALREADY_UNLOCKED', {
-                    id: currentCapsuleId
-                });
+                const response = await askGuardian('', 'CAPSULE_ALREADY_UNLOCKED', { id: currentCapsuleId });
                 addGuardianMessage(response);
                 setGuardianState('AWAITING_ID');
             } else {
-                const response = await askGuardian('', 'UNLOCK_ERROR', {
-                    id: currentCapsuleId,
-                    error: reason
-                });
+                const response = await askGuardian('', 'UNLOCK_ERROR', { id: currentCapsuleId, error: reason });
                 addGuardianMessage(response);
                 setGuardianState('AWAITING_ID');
             }
         }
     }
 
-    // ─────────────────────────────────────
-    // Send handler
-    // ─────────────────────────────────────
     function handleSend(e) {
         e?.preventDefault();
         const text = input.trim();
@@ -396,12 +292,8 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         }
     }
 
-    // ─────────────────────────────────────
-    // Render
-    // ─────────────────────────────────────
     return (
         <div className="guardian-modal" onClick={(e) => e.stopPropagation()}>
-            {/* Header */}
             <div className="guardian-header">
                 <div className="guardian-identity">
                     <div className="guardian-avatar">
@@ -423,7 +315,6 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
                 <button className="close-btn" onClick={onClose}>×</button>
             </div>
 
-            {/* Messages */}
             <div className="chat-messages">
                 {messages.map((msg, i) => {
                     if (msg.role === 'thinking') {
@@ -435,12 +326,8 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
                             </div>
                         );
                     }
-
                     return (
-                        <div
-                            key={i}
-                            className={`chat-message ${msg.role === 'guardian' ? 'guardian' : 'user'}`}
-                        >
+                        <div key={i} className={`chat-message ${msg.role === 'guardian' ? 'guardian' : 'user'}`}>
                             {msg.text.split('\n').map((line, j) => (
                                 <span key={j}>
                                     {line}
@@ -453,28 +340,19 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* Input */}
             <form className="chat-input-area" onSubmit={handleSend}>
                 <input
                     ref={inputRef}
                     type="text"
                     className="chat-input"
-                    placeholder={
-                        guardianState === 'AWAITING_PASSWORD'
-                            ? 'Enter the decryption password...'
-                            : 'Speak to the Guardian...'
-                    }
+                    placeholder={guardianState === 'AWAITING_PASSWORD' ? 'Enter the decryption password...' : 'Speak to the Guardian...'}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleKeyDown}
                     disabled={isProcessing}
                     autoComplete="off"
                 />
-                <button
-                    type="submit"
-                    className="chat-send-btn"
-                    disabled={isProcessing || !input.trim()}
-                >
+                <button type="submit" className="chat-send-btn" disabled={isProcessing || !input.trim()}>
                     ➤
                 </button>
             </form>
