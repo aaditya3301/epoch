@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ethers } from 'ethers';
 import CryptoJS from 'crypto-js';
-import { chatWithGuardian, buildCapsuleContext } from './localClient.js';
+import { chatWithGuardian, buildCapsuleContext } from './groqClient.js';
 
 function extractCapsuleId(text) {
     const cleaned = text.trim();
