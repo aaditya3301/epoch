@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ethers } from 'ethers';
 import CryptoJS from 'crypto-js';
-import { chatWithGuardian, buildCapsuleContext } from './groqClient.js';
+import { chatWithGuardian, buildCapsuleContext } from './localClient.js';
 
 function extractCapsuleId(text) {
     const cleaned = text.trim();
@@ -89,7 +89,14 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
         const newHistory = [...llmHistory];
         if (userText) newHistory.push({ role: 'user', content: userText });
         const messagesForLLM = [...newHistory, contextMsg];
+        // LOG: Local LLM usage
+        console.log('[Guardian] Using local LLM for chatWithGuardian:', {
+            contextScenario,
+            contextData,
+            messagesForLLM
+        });
         const response = await chatWithGuardian(messagesForLLM);
+        console.log('[Guardian] Local LLM response:', response);
         newHistory.push({ role: 'assistant', content: response });
         setLlmHistory(newHistory);
         return response;
