@@ -21,20 +21,20 @@ const MESSAGES = {
         if (hours > 0) timeStr += `${timeStr ? ', ' : ''}${hours} hour${hours !== 1 ? 's' : ''}`;
         if (mins > 0 && days === 0) timeStr += `${timeStr ? ', ' : ''}${mins} minute${mins !== 1 ? 's' : ''}`;
         if (!timeStr) timeStr = 'moments';
-        return `⏳ Patience, seeker. This vault remains bound by time.\nYou must wait **${timeStr}** before the seal dissolves.\n\nReturn when the moment arrives. Or speak another vault number.`;
+        return `Patience, seeker. This vault remains bound by time.\nYou must wait **${timeStr}** before the seal dissolves.\n\nReturn when the moment arrives. Or speak another vault number.`;
     },
 
     readyForPassword:
-        "The time-lock has dissolved. ✅\nBut the **cryptographic seal** remains.\n\nSpeak the password to shatter it.",
+        "The time-lock has dissolved.\nBut the **cryptographic seal** remains.\n\nSpeak the password to shatter it.",
 
     wrongPassword:
-        "❌ The seal rejects your words. The incantation is incorrect.\nTry again, seeker — or the vault stays sealed forever.",
+        "The seal rejects your words. The incantation is incorrect.\nTry again, seeker — or the vault stays sealed forever.",
 
     unlockSuccess:
-        "The seal is broken! 🔓\n\nYour payload emerges from the depths of the chain…\nDownloading your artifact now.",
+        "The seal is broken.\n\nYour payload emerges from the depths of the chain…\nDownloading your artifact now.",
 
     alreadyUnlocked:
-        "⚠️ This vault has already been claimed.\nIts contents have been released. There is nothing left to retrieve.\n\nSpeak another vault number if you seek elsewhere.",
+        "This vault has already been claimed.\nIts contents have been released. There is nothing left to retrieve.\n\nSpeak another vault number if you seek elsewhere.",
 
     notFound:
         "I sense no vault bearing that identifier.\nAre you certain of the number, seeker?",
@@ -43,7 +43,7 @@ const MESSAGES = {
         "I need a vault number to proceed.\nSpeak it plainly — for example: *\"Capsule 7\"* or simply *\"7\"*.",
 
     walletNeeded:
-        "⚠️ You must connect your wallet before approaching the vaults.\nThe chain cannot verify your intent without it.",
+        "You must connect your wallet before approaching the vaults.\nThe chain cannot verify your intent without it.",
 
     error: (msg) =>
         `A disturbance ripples through the chain…\n\n\`${msg}\`\n\nTry again, seeker.`,
@@ -298,7 +298,7 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
             const ipfsCID = capsule[1];
 
             const ipfsRes = await fetch(`https://gateway.pinata.cloud/ipfs/${ipfsCID}`);
-            if (!ipfsRes.ok) throw new Error("Failed to retrieve payload from the decentralized archive.");
+            if (!ipfsRes.ok) throw new Error('Failed to retrieve payload from the decentralized archive.');
             const encryptedFile = await ipfsRes.text();
 
             const decryptedBytes = CryptoJS.AES.decrypt(encryptedFile, password);
@@ -315,7 +315,7 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
             document.body.removeChild(a);
 
             removeThinkingMessage();
-            addGuardianMessage("📦 Your artifact has been delivered.\nThe vault is now empty. Is there another vault you seek?");
+            addGuardianMessage("Your artifact has been delivered.\nThe vault is now empty. Is there another vault you seek?");
             setCurrentCapsuleId(null);
             setGuardianState('AWAITING_ID');
 
@@ -329,7 +329,7 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
                 addGuardianMessage(MESSAGES.wrongPassword);
                 // Stay in AWAITING_PASSWORD so they can retry
             } else if (reason.includes('Too early')) {
-                addGuardianMessage("⏳ The temporal seal is still active. The chain does not lie — you must wait.");
+                addGuardianMessage("The temporal seal is still active. The chain does not lie — you must wait.");
                 setGuardianState('AWAITING_ID');
             } else if (reason.includes('Unlocked')) {
                 addGuardianMessage(MESSAGES.alreadyUnlocked);
@@ -368,7 +368,11 @@ export default function Guardian({ contract, provider, signer, onClose, isActive
                 <div className="guardian-identity">
                     <div className="guardian-avatar">
                         <div className="guardian-avatar-glow"></div>
-                        <span className="guardian-avatar-icon">🛡️</span>
+                        <svg className="guardian-avatar-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 2L3 7V12C3 17.25 6.75 22.08 12 23C17.25 22.08 21 17.25 21 12V7L12 2Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" fill="rgba(108, 92, 231, 0.15)" />
+                            <path d="M12 8V13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                            <circle cx="12" cy="16" r="0.75" fill="currentColor" />
+                        </svg>
                     </div>
                     <div className="guardian-info">
                         <span className="guardian-name">The Guardian</span>
